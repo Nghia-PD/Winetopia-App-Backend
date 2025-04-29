@@ -39,12 +39,23 @@ const upgradeTicket = async (ticket_number: string, current_ticket_type: string,
     }
 }
 
-const changeEmailOnTicket = async (ticket_number: string, json_attendee_email: string, current_email_on_ticket: string, silver_token: string, gold_token: string) => {
+const changeEmailOnTicket = async (ticket_number: string, json_attendee_email: string, current_email_on_ticket: string, current_ticket_type: string, silver_token: string, gold_token: string) => {
     try {
-        // TODO: deload
+        // deload
+        let silver_subtrahend = 0;
+        let gold_subtrahend = 0;
+        if(current_ticket_type.toLowerCase() == "premium"){
+            silver_subtrahend = 10; 
+            gold_subtrahend = 1;
+        }
+        else{ // There is only standard left
+            silver_subtrahend = 5;
+            gold_subtrahend = 0;
+        }
         await admin.firestore().collection("Users").doc(current_email_on_ticket).update({
-            silver_token: parseInt(silver_token) - 5,
-            gold_token: parseInt(gold_token) - 1,
+            silver_token: parseInt(silver_token) - silver_subtrahend,
+            gold_token: parseInt(gold_token) - gold_subtrahend,
+            ticket_number: null
         });
 
         // Update the ticket info.
@@ -52,7 +63,7 @@ const changeEmailOnTicket = async (ticket_number: string, json_attendee_email: s
             ticket_holder_email: json_attendee_email,
         });
     } catch (error) {
-        logger.info("Error when changging email on ticket: ", error);
+        logger.info("Error when changging email on ticket.", error);
     }
 }
 
@@ -70,35 +81,54 @@ const changeOtherDetailsOnTicket = async (ticket_number: string, email_on_ticket
 
 const changeOnTicketHandler = async (target_ticket_data: any, ticket_number: string, json_attendee_email: string, json_ticket_type: string, json_attendee_first_name: string, json_attendee_last_name: string, json_attendee_phone: string) => {
     try {
-        const current_email_on_ticket = target_ticket_data.email;
+        const current_email_on_ticket = target_ticket_data.ticket_holder_email;
         const ticket_number = target_ticket_data.ticket_number;
         const current_ticket_type = target_ticket_data.ticket_type;
-        
         const current_attendee = await admin.firestore().collection("Users").doc(current_email_on_ticket).get();
         const silver_token = await current_attendee.get("silver_token");
         const gold_token = await current_attendee.get("gold_token");
         
         // Changing email on ticket
         if(current_email_on_ticket != json_attendee_email){
-            changeEmailOnTicket(ticket_number, json_attendee_email, current_email_on_ticket, silver_token, gold_token);
+            logger.info("Change email on ticket");
+            changeEmailOnTicket(ticket_number, json_attendee_email, current_email_on_ticket, current_ticket_type, silver_token, gold_token);
             createNewUserAuth(json_attendee_email);
             createNewUserRecord(json_attendee_email, json_attendee_first_name, json_attendee_last_name, json_attendee_phone, json_ticket_type, ticket_number);
         }
         
         // Upgrade ticket type
-        else if(current_ticket_type != json_attendee_email){
+        else if(current_ticket_type != json_ticket_type){
+            logger.info("Upgrade ticket type");
             upgradeTicket(ticket_number, current_ticket_type, json_ticket_type, silver_token, gold_token);
         }
 
         // Changing other details than email
         else{
+            logger.info("Change other details on ticket");
             changeOtherDetailsOnTicket(ticket_number, current_email_on_ticket, json_attendee_first_name, json_attendee_last_name, json_attendee_phone);
         }
     }catch (error) {
-        logger.error("Error edit ticket " + ticket_number + " : " + error);
+        logger.error("Error edit ticket " + ticket_number + "." + error);
     }
 }
 
+const attachTicketToCurrentUser = async (json_ticket_holder_email:string, json_ticket_number: string) => {
+    try {
+        const target_user = await admin.firestore().collection("Users").doc(json_ticket_holder_email).get();
+        const current_ticket_number = target_user.get("ticket_number");
+        if(current_ticket_number == null){
+            await admin.firestore().collection("Users").doc(json_ticket_holder_email).update({
+                ticket_number: json_ticket_number
+            });
+        }
+        else{
+            logger.info("This account is asscociate with a different ticket!");
+            // call send email here
+        }
+    } catch (error) {
+        logger.info(error);
+    }
+}
 const createNewUserRecord = async (email: string, first_name: string, last_name: string, phone: string, ticket_type: string, ticket_number: string) => {
     let silver_token: number;
     let gold_token: number;
@@ -119,12 +149,11 @@ const createNewUserRecord = async (email: string, first_name: string, last_name:
     }
 
     try {
-        await admin.firestore().collection('users').doc(email).set({
+        await admin.firestore().collection('Users').doc(email).set({
             email: email,
             first_name: first_name,
             last_name: last_name,
             phone: phone,
-            ticket_type: ticket_type,
             ticket_number: ticket_number,
             silver_token: silver_token,
             gold_token: gold_token,
@@ -143,7 +172,7 @@ const createNewUserAuth = async (email: string) => {
             password: "Winetopia2025", // change this to variable in the furture.
         });
         logger.info("✅ User created:", authRecord.email);
-        return authRecord.uid;;
+        return authRecord.uid;
     }catch (error: any){
         if(error.code === "auth/email-already-exists"){
             //TODO send email here
@@ -157,20 +186,30 @@ const createNewUserAuth = async (email: string) => {
     }
 }
 
+const checkExistingUser = async (json_ticket_holder_email: string) => {
+    try {
+        const target_user = await admin.firestore().collection("Users").doc(json_ticket_holder_email).get();
+        return target_user.exists;
+    } catch (error) {
+        logger.error(error);
+        return error;
+    }
+}
+
 const checkExistingTicket = async (ticket_number: string) => {
     try {
         const target_ticket = await admin.firestore().collection(ticket_collection).doc(ticket_number).get();
         if(target_ticket.exists){
             logger.info("Found an exist ticket number: ", ticket_number);
+            return target_ticket.data();
         }
         else{
             logger.info("New ticket number: ", ticket_number);
+            return null;
         }
-
-        return target_ticket.data;
     } catch (error) {
         logger.info("Error when trying to access the ticket: ", error);
-        return null;
+        return false;
     }
 }
 
@@ -223,28 +262,27 @@ export const flicketWebhookHandler = functions.https.onRequest(
         }
 
         else{
-            const target_ticket = checkExistingTicket(json_ticket_number);
+            const target_ticket = await checkExistingTicket(json_ticket_number);
 
-            if(target_ticket == null){
+            if(target_ticket === false){
                 logger.info("Their might be an error when checking ticket: ", json_ticket_number);
             }
 
             // New ticket
-            else if(target_ticket == undefined){
-                logger.info("NOT found ticket number: " + json_ticket_number + "in the database!");
+            else if(target_ticket === null){
                 createNewTicketRecord(json_ticket_number, json_ticket_type, json_ticket_holder_email);
-                const authRecord = createNewUserAuth(json_ticket_holder_email);
-                if(authRecord == null){
-                    // TODO: call the send fail email function here.
-                    logger.info("Error when create new Auth. Double check to see if this email have been used!");
+                const target_user = await checkExistingUser(json_ticket_holder_email);
+                if(target_user == true){
+                    attachTicketToCurrentUser(json_ticket_holder_email, json_ticket_number);
                 }
                 else{
-                    // TODO: call the success email function here.
-                    createNewUserRecord(json_ticket_holder_email, json_ticket_holder_first_name, json_ticket_holder_last_name, json_ticket_holder_phone, json_ticket_type, json_ticket_number);
+                    const authRecord = createNewUserAuth(json_ticket_holder_email);
+                    if(authRecord !== null){
+                        createNewUserRecord(json_ticket_holder_email, json_ticket_holder_first_name, json_ticket_holder_last_name, json_ticket_holder_phone, json_ticket_type, json_ticket_number);
+                    }
                 }
             }
             else{
-                logger.info("Found ticket number: " + json_ticket_number + " in the database!");
                 changeOnTicketHandler(target_ticket, json_ticket_number, json_ticket_holder_email, json_ticket_type, json_ticket_holder_first_name, json_ticket_holder_last_name, json_ticket_holder_phone);
             }
         }
