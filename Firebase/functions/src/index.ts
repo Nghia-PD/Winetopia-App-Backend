@@ -164,12 +164,11 @@ const createNewUserRecord = async (email: string, first_name: string, last_name:
     }
 }
 
-const createNewUserAuth = async (email: string) => {
+const createNewUserAuth = async (email: string, first_name: string, last_name: string, phone: string, ticket_type: string, ticket_number: string) => {
     try{
         const authRecord = await admin.auth().createUser({
-            uid: email,
-            email: email,
-            password: "Winetopia2025", // change this to variable in the furture.
+            email,
+            password: "Winetopia2025",
         });
         logger.info("✅ User created:", authRecord.email);
         return authRecord.uid;
@@ -186,32 +185,6 @@ const createNewUserAuth = async (email: string) => {
     }
 }
 
-const checkExistingUser = async (json_ticket_holder_email: string) => {
-    try {
-        const target_user = await admin.firestore().collection("Users").doc(json_ticket_holder_email).get();
-        return target_user.exists;
-    } catch (error) {
-        logger.error(error);
-        return error;
-    }
-}
-
-const checkExistingTicket = async (ticket_number: string) => {
-    try {
-        const target_ticket = await admin.firestore().collection(ticket_collection).doc(ticket_number).get();
-        if(target_ticket.exists){
-            logger.info("Found an exist ticket number: ", ticket_number);
-            return target_ticket.data();
-        }
-        else{
-            logger.info("New ticket number: ", ticket_number);
-            return null;
-        }
-    } catch (error) {
-        logger.info("Error when trying to access the ticket: ", error);
-        return false;
-    }
-}
 
 function checkEventId(event_id: string): boolean {
     return event_id === winetopia2025_event_id;
@@ -231,15 +204,11 @@ export const flicketWebhookHandler = functions.https.onRequest(
             logger.info("Webhook Payload (Text):", req.body); // Fallback to text
         }
         
-        const json_event_id = req.body?.event_id ?? null;
-        const json_ticket_type = req.body?.ticket_type ?? null;
-        const json_ticket_number = req.body?.barcode ?? null;
-
-        const json_ticket_holder_details = req.body?.ticket_holder_details ?? null;
-        const json_ticket_holder_email = json_ticket_holder_details?.email ?? null;
-        const json_ticket_holder_first_name = json_ticket_holder_details?.first_name ?? null;
-        const json_ticket_holder_last_name = json_ticket_holder_details?.last_name ?? null;
-        const json_ticket_holder_phone = json_ticket_holder_details?.phone ?? null;
+        const event_id = req.body?.event_id ?? null;
+        const ticket_holder_details = req.body?.ticket_holder_details ?? null;
+        const ticket_holder_email = ticket_holder_details?.email ?? null;
+        const ticket_type = req.body?.ticket_type ?? null;
+        const ticket_number = req.body?.barcode ?? null;
 
         if(!checkEventId(json_event_id) ){
             logger.info("This webhook is not for Winetopia event");
@@ -262,29 +231,7 @@ export const flicketWebhookHandler = functions.https.onRequest(
         }
 
         else{
-            const target_ticket = await checkExistingTicket(json_ticket_number);
-
-            if(target_ticket === false){
-                logger.info("Their might be an error when checking ticket: ", json_ticket_number);
-            }
-
-            // New ticket
-            else if(target_ticket === null){
-                createNewTicketRecord(json_ticket_number, json_ticket_type, json_ticket_holder_email);
-                const target_user = await checkExistingUser(json_ticket_holder_email);
-                if(target_user == true){
-                    attachTicketToCurrentUser(json_ticket_holder_email, json_ticket_number);
-                }
-                else{
-                    const authRecord = createNewUserAuth(json_ticket_holder_email);
-                    if(authRecord !== null){
-                        createNewUserRecord(json_ticket_holder_email, json_ticket_holder_first_name, json_ticket_holder_last_name, json_ticket_holder_phone, json_ticket_type, json_ticket_number);
-                    }
-                }
-            }
-            else{
-                changeOnTicketHandler(target_ticket, json_ticket_number, json_ticket_holder_email, json_ticket_type, json_ticket_holder_first_name, json_ticket_holder_last_name, json_ticket_holder_phone);
-            }
+            await createNewUserAuth(ticket_holder_email, ticket_holder_details.first_name, ticket_holder_details.last_name, ticket_holder_details.cell_phone, ticket_type, ticket_number);
         }
 
         res.status(200).end();
