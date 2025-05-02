@@ -90,25 +90,6 @@ const changeEmailAuth = async (ticket_number: string, json_ticket_holder_email: 
     }
 }
 
-// Upgrading ticket type - Flicket support upgrading ticket only!
-const upgradeTicket = async (ticket_number: string, current_ticket_type: string, new_ticket_type: string) => {
-    try {
-        const target_account = await admin.firestore().collection("Users").doc(ticket_number).get();
-        const silver_token = await target_account.get("silver_token");
-        const gold_token = await target_account.get("gold_token");
-        
-        if(current_ticket_type.toLowerCase() == "standard" && new_ticket_type.toLocaleLowerCase() == "premium"){
-            await admin.firestore().collection("Users").doc().update({
-                ticket_type: new_ticket_type,
-                silver_token: parseInt(silver_token) + 5,
-                gold_token: parseInt(gold_token) + 1,
-            });
-        }
-    } catch (error) {
-        logger.error("Error when upgrade ticket type, ticket number: ", ticket_number);
-    }
-}
-
 const overrideCurrentAccount = async (
     ticket_number: string, 
     json_ticket_type: string,
@@ -120,7 +101,6 @@ const overrideCurrentAccount = async (
     try {
         const current_user_record = await admin.firestore().collection("Users").doc(ticket_number).get();
         const current_email = current_user_record.get("email");
-        const current_ticket_type = current_user_record.get("ticket_type");
         const full_name = json_ticket_holder_first_name + " " + json_ticket_holder_last_name;
         
         if(current_email != json_ticket_holder_email){
@@ -130,10 +110,6 @@ const overrideCurrentAccount = async (
                     email: json_ticket_holder_email
                 });
             }
-        }
-
-        if(current_ticket_type.toLowerCase() != json_ticket_type.toLowerCase()){
-            await upgradeTicket(ticket_number, current_ticket_type, json_ticket_type);
         }
 
         await admin.firestore().collection("Users").doc(ticket_number).update({
@@ -246,7 +222,7 @@ export const flicketWebhookHandler = functions.https.onRequest(
                 );
             }
             else if(!ticketExistFlag){
-                const full_name = json_ticket_holder_details.first_name + json_ticket_holder_details.last_name;
+                const full_name = json_ticket_holder_details.first_name + " " + json_ticket_holder_details.last_name;
                 const success_create_auth = await createNewUserAuth(json_ticket_number, json_ticket_holder_email, full_name);
                 if(success_create_auth)
                 {
