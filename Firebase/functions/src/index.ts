@@ -1,275 +1,281 @@
-/* eslint-disable */
-
 import * as admin from "firebase-admin";
 import * as logger from "firebase-functions/logger";
 import * as functions from "firebase-functions";
 import * as fucntionsV1 from "firebase-functions/v1";
-import sgMail from '@sendgrid/mail';
-import * as dotenv from 'dotenv';
+import sgMail from "@sendgrid/mail";
+import * as dotenv from "dotenv";
 
 // Load environment variables from .env file
 dotenv.config();
-const winetopia2025_event_id = process.env.WINETOPIA2025_EVENT_ID;
+const winetopia2025EventId = process.env.WINETOPIA2025_EVENT_ID;
+const sendGridApiKey = process.env.SENDGRID_API_KEY;
 
 admin.initializeApp();
 
-const createNewUserRecord = async (ticket_number: string, ticket_type: string, email: string, first_name: string, last_name: string, phone: string) => {
-    let silver_token: number;
-    let gold_token: number;
+const createNewUserRecord = async (
+  ticketNumber: string,
+  ticketType: string,
+  email: string,
+  firstName: string,
+  lastName: string,
+  phone: string
+) => {
+  let silverToken: number;
+  let goldToken: number;
 
-    if(ticket_type.toLowerCase() == "premium"){
-        silver_token = 10;
-        gold_token = 1;
+  if (ticketType.toLowerCase() == "premium") {
+    silverToken = 10;
+    goldToken = 1;
+  } else if (ticketType.toLowerCase() == "standard") {
+    silverToken = 5;
+    goldToken = 0;
+  } else {
+    silverToken = 0;
+    goldToken = 0;
+  }
+
+  try {
+    await admin.firestore().collection("Users").doc(ticketNumber).set({
+      ticketNumber: ticketNumber,
+      ticketType: ticketType,
+      email: email,
+      firstName: firstName,
+      lastName: lastName,
+      phone: phone,
+      silverToken: silverToken,
+      goldToken: goldToken,
+    });
+    logger.info("✅ User record created in Firestore for UID: ", ticketNumber);
+  } catch (error) {
+    logger.error("Error creating user record in Firestore", error);
+  }
+};
+
+const createNewUserAuth = async (
+  ticketNumber: string,
+  jsonAttendeeEmail: string,
+  name: string
+) => {
+  try {
+    const authRecord = await admin.auth().createUser({
+      uid: ticketNumber,
+      email: jsonAttendeeEmail,
+      password: "Winetopia2025",
+      displayName: name,
+    });
+    logger.info("✅ User created:", authRecord.email);
+
+    return true;
+  } catch (error: any) {
+    if (error.code === "auth/email-already-exists") {
+      logger.warn("⚠️ User already exists with email:", jsonAttendeeEmail);
+      return false;
+    } else {
+      logger.error("Error creating user: ", error);
+      // call send email function, pass in the error
+      return error;
     }
+  }
+};
 
-    else if(ticket_type.toLowerCase() == "standard"){
-        silver_token = 5;
-        gold_token = 0;
+const changeEmailAuth = async (
+  ticketNumber: string,
+  jsonAttendeeEmail: string
+) => {
+  try {
+    await admin.auth().updateUser(ticketNumber, {
+      email: jsonAttendeeEmail,
+    });
+    return true;
+  } catch (error: any) {
+    if (error.code === "auth/email-already-exists") {
+      logger.warn("⚠️ User already exists with email:", jsonAttendeeEmail);
+      return false;
+    } else {
+      return null;
     }
-
-    else{
-        silver_token = 0;
-        gold_token = 0;
-    }
-
-    try {
-        await admin.firestore().collection('Users').doc(ticket_number).set({
-            ticket_number: ticket_number,
-            ticket_type: ticket_type,
-            email: email,
-            first_name: first_name,
-            last_name: last_name,
-            phone: phone,
-            silver_token: silver_token,
-            gold_token: gold_token,
-        });
-        logger.info("✅ User record created in Firestore for UID: ", ticket_number);
-    } catch (error) {
-        logger.error("Error creating user record in Firestore", error);
-    }
-}
-
-const createNewUserAuth = async (ticket_number: string, json_ticket_holder_email: string, name: string) => {
-    try{
-        const authRecord = await admin.auth().createUser({
-            uid: ticket_number,
-            email: json_ticket_holder_email,
-            password: "Winetopia2025",
-            displayName: name
-        });
-        logger.info("✅ User created:", authRecord.email); 
-
-        return true;
-    }catch (error: any){
-        if(error.code === "auth/email-already-exists"){
-            logger.warn("⚠️ User already exists with email:", json_ticket_holder_email);
-            return false;
-        }
-        else{
-            logger.error("Error creating user: ", error);
-            //call send email function, pass in the error
-            return error;
-        }
-    }
-}
-
-const changeEmailAuth = async (ticket_number: string, json_ticket_holder_email: string) => {
-    try {
-        await admin.auth().updateUser(ticket_number, {
-            email: json_ticket_holder_email
-        });
-        return true;
-    } catch (error: any) {
-        if(error.code === "auth/email-already-exists"){
-            logger.warn("⚠️ User already exists with email:", json_ticket_holder_email);
-            return false;
-        }
-        else{
-            return null;
-        }
-    }
-}
+  }
+};
 
 const overrideCurrentAccount = async (
-    ticket_number: string, 
-    json_ticket_type: string,
-    json_ticket_holder_email: string, 
-    json_ticket_holder_first_name: string, 
-    json_ticket_holder_last_name: string, 
-    json_ticket_holder_phone: string,
+  ticketNumber: string,
+  jsonAttendeeEmail: string,
+  jsonAttendeeFirstName: string,
+  jsonAttendeeLastName: string,
+  jsonAttendeePhone: string
 ) => {
-    try {
-        const current_user_record = await admin.firestore().collection("Users").doc(ticket_number).get();
-        const current_email = current_user_record.get("email");
-        const full_name = json_ticket_holder_first_name + " " + json_ticket_holder_last_name;
-        
-        if(current_email != json_ticket_holder_email){
-            const flag = await changeEmailAuth(ticket_number, json_ticket_holder_email);
-            if(flag){
-                await admin.firestore().collection("Users").doc(ticket_number).update({
-                    email: json_ticket_holder_email
-                });
-            }
-        }
+  try {
+    const currentUserRecord = await admin
+      .firestore()
+      .collection("Users")
+      .doc(ticketNumber)
+      .get();
+    const currentEmail = currentUserRecord.get("email");
+    const fullName = jsonAttendeeFirstName + " " + jsonAttendeeLastName;
 
-        await admin.firestore().collection("Users").doc(ticket_number).update({
-            first_name: json_ticket_holder_first_name,
-            last_name: json_ticket_holder_last_name,
-            phone: json_ticket_holder_phone
+    if (currentEmail != jsonAttendeeEmail) {
+      const flag = await changeEmailAuth(ticketNumber, jsonAttendeeEmail);
+      if (flag) {
+        await admin.firestore().collection("Users").doc(ticketNumber).update({
+          email: jsonAttendeeEmail,
         });
-
-        await admin.auth().updateUser(ticket_number, {
-            displayName: full_name,
-        });
-        
-        logger.info("Update account info:", ticket_number);
-    } catch (error) {
-        logger.info("Error when override current account", error);
+      }
     }
-}
 
-const checkExistingTicket = async (ticket_number: string) => {
-    try {
-        const record = await admin.firestore().collection("Users").doc(ticket_number).get();
-        return record.exists;
-    } catch (error) {
-        logger.error(error);
-        return error;
-    }
-}
-
-function checkEventId(event_id: string): boolean {
-    return event_id === winetopia2025_event_id;
-}
-
-const notifyEmailHasBeenUsed = async (email: string, full_name: string) => {
-    const apiKey = process.env.SENDGRID_API_KEY;
-    if (!apiKey) {
-        logger.info("Missing Send Grid API key");
-        throw new Error('Missing SENDGRID_API_KEY in environment variables');
-    }
-    sgMail.setApiKey(apiKey);
-    const msg = {
-        to: email,
-        from: "tech@lemongrassproductions.co.nz",
-        templateId: "d-48d4dae10d894e849a7e45d93fb89028",
-        dynamic_template_data: {
-            name: full_name,
-            email: email
-        }
-    };
-    sgMail
-        .send(msg)
-        .then((response) => {
-        logger.info(response[0].statusCode);
-        logger.info(response[0].headers);
-        })
-        .catch((error) => {
-            logger.info(error);
+    await admin.firestore().collection("Users").doc(ticketNumber).update({
+      first_name: jsonAttendeeFirstName,
+      last_name: jsonAttendeeLastName,
+      phone: jsonAttendeePhone,
     });
-}
-    
-export const flicketWebhookHandler = functions.https.onRequest(
-    {
-        region: "australia-southeast1",
+
+    await admin.auth().updateUser(ticketNumber, {
+      displayName: fullName,
+    });
+
+    logger.info("Update account info:", ticketNumber);
+  } catch (error) {
+    logger.info("Error when override current account", error);
+  }
+};
+
+const checkExistingTicket = async (ticketNumber: string) => {
+  try {
+    const record = await admin
+      .firestore()
+      .collection("Users")
+      .doc(ticketNumber)
+      .get();
+    return record.exists;
+  } catch (error) {
+    logger.error(error);
+    return error;
+  }
+};
+
+const checkEventId = (eventId: string) => {
+  return eventId === winetopia2025EventId;
+};
+
+const notifyEmailHasBeenUsed = async (email: string, fullName: string) => {
+  if (!sendGridApiKey) {
+    logger.info("Missing Send Grid API key");
+    throw new Error("Missing SENDGRID_API_KEY in environment variables");
+  }
+  sgMail.setApiKey(sendGridApiKey);
+  const msg = {
+    to: email,
+    from: "tech@lemongrassproductions.co.nz",
+    templateId: "d-48d4dae10d894e849a7e45d93fb89028",
+    dynamic_template_data: {
+      name: fullName,
+      email: email,
     },
-    async (req, res) => {
-        logger.info("Webhook Received!");
-        try {
-            const body = req.body;
-            logger.info("Webhook Payload (JSON):", body);
-        } catch (error) {
-            logger.warn("Could not parse request body as JSON. Logging as text.");
-            logger.info("Webhook Payload (Text):", req.body); // Fallback to text
-        }
-        
-        const json_event_id = req.body?.event_id ?? null;
-        const json_ticket_holder_details = req.body?.ticket_holder_details ?? null;
-        const json_ticket_holder_email = json_ticket_holder_details?.email ?? null;
-        const json_ticket_type = req.body?.ticket_type ?? null;
-        const json_ticket_number = req.body?.barcode ?? null;
+  };
+  sgMail
+    .send(msg)
+    .then((response) => {
+      logger.info(response[0].statusCode);
+      logger.info(response[0].headers);
+    })
+    .catch((error) => {
+      logger.info(error);
+    });
+};
 
-        if(!checkEventId(json_event_id) ){
-            logger.info("This webhook is not for Winetopia event");
-        }
-
-        else if(json_ticket_holder_details == null){
-            logger.info("ticket_holder_details is null or not found!");
-        }
-
-        else if(json_ticket_holder_email == null){
-            logger.info("ticket_holder_details.email is null or not found!");
-        }
-
-        else if(json_ticket_type == null){
-            logger.info("ticket_type is null!");
-        }
-
-        else if(json_ticket_number == null){
-            logger.info("ticket_number is null!")
-        }
-
-        else{
-            const ticketExistFlag = await checkExistingTicket(json_ticket_number);
-            if(ticketExistFlag){
-                await overrideCurrentAccount(
-                    json_ticket_number, 
-                    json_ticket_type, 
-                    json_ticket_holder_email, 
-                    json_ticket_holder_details.first_name,
-                    json_ticket_holder_details.last_name,
-                    json_ticket_holder_details.cell_phone,
-                );
-            }
-            else if(!ticketExistFlag){
-                const full_name = json_ticket_holder_details.first_name + " " + json_ticket_holder_details.last_name;
-                const success_create_auth = await createNewUserAuth(json_ticket_number, json_ticket_holder_email, full_name);
-                if(success_create_auth)
-                {
-                    await createNewUserRecord(
-                        json_ticket_number,
-                        json_ticket_type,
-                        json_ticket_holder_email, 
-                        json_ticket_holder_details.first_name, 
-                        json_ticket_holder_details.last_name, 
-                        json_ticket_holder_details.cell_phone, 
-                    );
-                }
-                else if(!success_create_auth){
-                    notifyEmailHasBeenUsed(json_ticket_holder_email, full_name);
-                }
-                // TODO: else{ notify Fail SetUp account}
-            }
-        }
-
-        res.status(200).end();
+export const flicketWebhookHandler = functions.https.onRequest(
+  {
+    region: "australia-southeast1",
+  },
+  async (req, res) => {
+    logger.info("Webhook Received!");
+    try {
+      const body = req.body;
+      logger.info("Webhook Payload (JSON):", body);
+    } catch (error) {
+      logger.warn("Could not parse request body as JSON. Logging as text.");
+      logger.info("Webhook Payload (Text):", req.body); // Fallback to text
     }
+
+    const jsonEventId = req.body?.event_id ?? null;
+    const jsonAttendeeDetails = req.body?.ticket_holder_details ?? null;
+    const jsonAttendeeEmail = jsonAttendeeDetails?.email ?? null;
+    const jsonTicketType = req.body?.ticket_type ?? null;
+    const jsonTicketNumber = req.body?.barcode ?? null;
+
+    if (!checkEventId(jsonEventId)) {
+      logger.info("This webhook is not for Winetopia event");
+    } else if (jsonAttendeeDetails == null) {
+      logger.info("ticket_holder_details is null or not found!");
+    } else if (jsonAttendeeEmail == null) {
+      logger.info("ticket_holder_details.email is null or not found!");
+    } else if (jsonTicketType == null) {
+      logger.info("ticket_type is null!");
+    } else if (jsonTicketNumber == null) {
+      logger.info("ticket_number is null!");
+    } else {
+      const ticketExistFlag = await checkExistingTicket(jsonTicketNumber);
+      if (ticketExistFlag) {
+        await overrideCurrentAccount(
+          jsonTicketNumber,
+          jsonAttendeeEmail,
+          jsonAttendeeDetails.first_name,
+          jsonAttendeeDetails.last_name,
+          jsonAttendeeDetails.cell_phone
+        );
+      } else if (!ticketExistFlag) {
+        const fullName =
+          jsonAttendeeDetails.first_name + " " + jsonAttendeeDetails.last_name;
+        const successCreateAuthStatus = await createNewUserAuth(
+          jsonTicketNumber,
+          jsonAttendeeEmail,
+          fullName
+        );
+        if (successCreateAuthStatus) {
+          await createNewUserRecord(
+            jsonTicketNumber,
+            jsonTicketType,
+            jsonAttendeeEmail,
+            jsonAttendeeDetails.first_name,
+            jsonAttendeeDetails.last_name,
+            jsonAttendeeDetails.cell_phone
+          );
+        } else if (!successCreateAuthStatus) {
+          notifyEmailHasBeenUsed(jsonAttendeeEmail, fullName);
+        }
+        // TODO: else{ notify Fail SetUp account}
+      }
+    }
+    res.status(200).end();
+  }
 );
 
-export const welcome = fucntionsV1.region("australia-southeast1").auth.user().onCreate((user) =>{
-    const apiKey = process.env.SENDGRID_API_KEY;
-    if (!apiKey) {
-        logger.info("Missing Send Grid API key");
-        throw new Error('Missing SENDGRID_API_KEY in environment variables');
+export const welcome = fucntionsV1
+  .region("australia-southeast1")
+  .auth.user()
+  .onCreate((user) => {
+    // const apiKey = process.env.SENDGRID_API_KEY;
+    if (!sendGridApiKey) {
+      logger.info("Missing Send Grid API key");
+      throw new Error("Missing SENDGRID_API_KEY in environment variables");
     }
-    sgMail.setApiKey(apiKey);
-    //Send email welcome with login details and app link
+    sgMail.setApiKey(sendGridApiKey);
+    // Send email welcome with login details and app link
     const msg = {
-        to: user.email,
-        from: "tech@lemongrassproductions.co.nz",
-        templateId: "d-715ec7a4d4414d23a294d2b3c5a7f684",
-        dynamic_template_data: {
-            name: user.displayName,
-            email: user.email
-        }
+      to: user.email,
+      from: "tech@lemongrassproductions.co.nz",
+      templateId: "d-715ec7a4d4414d23a294d2b3c5a7f684",
+      dynamic_template_data: {
+        name: user.displayName,
+        email: user.email,
+      },
     };
     sgMail
-        .send(msg)
-        .then((response) => {
+      .send(msg)
+      .then((response) => {
         logger.info(response[0].statusCode);
         logger.info(response[0].headers);
-        })
-        .catch((error) => {
-            logger.info(error);
-        });
-});
+      })
+      .catch((error) => {
+        logger.info(error);
+      });
+  });
