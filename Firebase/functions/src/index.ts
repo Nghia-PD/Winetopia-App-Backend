@@ -123,8 +123,8 @@ const overrideCurrentAccount = async (
     }
 
     await admin.firestore().collection("Users").doc(ticketNumber).update({
-      first_name: jsonAttendeeFirstName,
-      last_name: jsonAttendeeLastName,
+      firstName: jsonAttendeeFirstName,
+      lastName: jsonAttendeeLastName,
       phone: jsonAttendeePhone,
     });
 
@@ -190,6 +190,8 @@ export const flicketWebhookHandler = functions.https.onRequest(
     logger.info("Webhook Received!");
     try {
       const body = req.body;
+      const headers = req.headers;
+      logger.info("Webhook Header:", headers);
       logger.info("Webhook Payload (JSON):", body);
     } catch (error) {
       logger.warn("Could not parse request body as JSON. Logging as text.");
