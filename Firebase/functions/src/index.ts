@@ -1,9 +1,10 @@
 import * as admin from "firebase-admin";
 import * as logger from "firebase-functions/logger";
 import * as functions from "firebase-functions";
-import * as fucntionsV1 from "firebase-functions/v1";
+import * as functionsV1 from "firebase-functions/v1";
 import sgMail from "@sendgrid/mail";
 import * as dotenv from "dotenv";
+import {FirebaseAuthError} from "firebase-admin/auth";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -12,7 +13,7 @@ const sendGridApiKey = process.env.SENDGRID_API_KEY;
 
 admin.initializeApp();
 
-const createNewUserRecord = async (
+const createNewAttendeeRecord = async (
   ticketNumber: string,
   ticketType: string,
   email: string,
@@ -25,7 +26,7 @@ const createNewUserRecord = async (
 
   if (ticketType.toLowerCase() == "premium") {
     silverToken = 10;
-    goldToken = 1;
+    goldToken = 0;
   } else if (ticketType.toLowerCase() == "standard") {
     silverToken = 5;
     goldToken = 0;
@@ -35,7 +36,7 @@ const createNewUserRecord = async (
   }
 
   try {
-    await admin.firestore().collection("Users").doc(ticketNumber).set({
+    await admin.firestore().collection("Attendees").doc(ticketNumber).set({
       ticketNumber: ticketNumber,
       ticketType: ticketType,
       email: email,
@@ -51,49 +52,63 @@ const createNewUserRecord = async (
   }
 };
 
-const createNewUserAuth = async (
+const createNewAttendeeAuth = async (
   ticketNumber: string,
   jsonAttendeeEmail: string,
-  name: string
+  fullName: string
 ) => {
   try {
     const authRecord = await admin.auth().createUser({
       uid: ticketNumber,
       email: jsonAttendeeEmail,
       password: "Winetopia2025",
-      displayName: name,
+      displayName: fullName,
+    });
+    admin.auth().setCustomUserClaims(ticketNumber, {
+      role: "Attendee",
     });
     logger.info("✅ User created:", authRecord.email);
 
-    return true;
-  } catch (error: any) {
-    if (error.code === "auth/email-already-exists") {
-      logger.warn("⚠️ User already exists with email:", jsonAttendeeEmail);
-      return false;
+    return authRecord;
+  } catch (error) {
+    if (error instanceof FirebaseAuthError) {
+      switch (error.code) {
+      case "auth/user-not-found":
+        notifyEmailHasBeenUsed(jsonAttendeeEmail, fullName);
+        break;
+      }
     } else {
       logger.error("Error creating user: ", error);
       // call send email function, pass in the error
-      return error;
     }
+
+    return null;
   }
 };
 
 const changeEmailAuth = async (
   ticketNumber: string,
-  jsonAttendeeEmail: string
+  jsonAttendeeEmail: string,
+  fullName: string
 ) => {
   try {
-    await admin.auth().updateUser(ticketNumber, {
+    const authRecord = await admin.auth().updateUser(ticketNumber, {
       email: jsonAttendeeEmail,
     });
-    return true;
-  } catch (error: any) {
-    if (error.code === "auth/email-already-exists") {
-      logger.warn("⚠️ User already exists with email:", jsonAttendeeEmail);
-      return false;
+
+    return authRecord;
+  } catch (error) {
+    if (error instanceof FirebaseAuthError) {
+      switch (error.code) {
+      case "auth/email-already-exists":
+        notifyEmailHasBeenUsed(jsonAttendeeEmail, fullName);
+        logger.warn("⚠️ User already exists with email:", jsonAttendeeEmail);
+        break;
+      }
     } else {
-      return null;
+      logger.error("Error when change Email auth", error);
     }
+    return null;
   }
 };
 
@@ -107,22 +122,30 @@ const overrideCurrentAccount = async (
   try {
     const currentUserRecord = await admin
       .firestore()
-      .collection("Users")
+      .collection("Attendees")
       .doc(ticketNumber)
       .get();
     const currentEmail = currentUserRecord.get("email");
     const fullName = jsonAttendeeFirstName + " " + jsonAttendeeLastName;
 
     if (currentEmail != jsonAttendeeEmail) {
-      const flag = await changeEmailAuth(ticketNumber, jsonAttendeeEmail);
-      if (flag) {
-        await admin.firestore().collection("Users").doc(ticketNumber).update({
-          email: jsonAttendeeEmail,
-        });
+      const changeEmailResult = await changeEmailAuth(
+        ticketNumber,
+        jsonAttendeeEmail,
+        fullName
+      );
+      if (changeEmailResult != null) {
+        await admin
+          .firestore()
+          .collection("Attendees")
+          .doc(ticketNumber)
+          .update({
+            email: jsonAttendeeEmail,
+          });
       }
     }
 
-    await admin.firestore().collection("Users").doc(ticketNumber).update({
+    await admin.firestore().collection("Attendees").doc(ticketNumber).update({
       firstName: jsonAttendeeFirstName,
       lastName: jsonAttendeeLastName,
       phone: jsonAttendeePhone,
@@ -142,13 +165,13 @@ const checkExistingTicket = async (ticketNumber: string) => {
   try {
     const record = await admin
       .firestore()
-      .collection("Users")
+      .collection("Attendees")
       .doc(ticketNumber)
       .get();
     return record.exists;
   } catch (error) {
     logger.error(error);
-    return error;
+    return null;
   }
 };
 
@@ -171,7 +194,7 @@ const notifyEmailHasBeenUsed = async (email: string, fullName: string) => {
       email: email,
     },
   };
-  sgMail
+  await sgMail
     .send(msg)
     .then((response) => {
       logger.info(response[0].statusCode);
@@ -193,75 +216,70 @@ export const flicketWebhookHandler = functions.https.onRequest(
       const headers = req.headers;
       logger.info("Webhook Header:", headers);
       logger.info("Webhook Payload (JSON):", body);
-    } catch (error) {
-      logger.warn("Could not parse request body as JSON. Logging as text.");
-      logger.info("Webhook Payload (Text):", req.body); // Fallback to text
-    }
 
-    const jsonEventId = req.body?.event_id ?? null;
-    const jsonAttendeeDetails = req.body?.ticket_holder_details ?? null;
-    const jsonAttendeeEmail = jsonAttendeeDetails?.email ?? null;
-    const jsonTicketType = req.body?.ticket_type ?? null;
-    const jsonTicketNumber = req.body?.barcode ?? null;
+      const jsonEventId = req.body?.event_id ?? null;
+      const jsonAttendeeDetails = req.body?.ticket_holder_details ?? null;
+      const jsonAttendeeEmail = jsonAttendeeDetails?.email ?? null;
+      const jsonTicketType = req.body?.ticket_type ?? null;
+      const jsonTicketNumber = req.body?.barcode ?? null;
+      const fullName =
+        jsonAttendeeDetails.first_name + " " + jsonAttendeeDetails.last_name;
 
-    if (!checkEventId(jsonEventId)) {
-      logger.info("This webhook is not for Winetopia event");
-    } else if (jsonAttendeeDetails == null) {
-      logger.info("ticket_holder_details is null or not found!");
-    } else if (jsonAttendeeEmail == null) {
-      logger.info("ticket_holder_details.email is null or not found!");
-    } else if (jsonTicketType == null) {
-      logger.info("ticket_type is null!");
-    } else if (jsonTicketNumber == null) {
-      logger.info("ticket_number is null!");
-    } else {
-      const ticketExistFlag = await checkExistingTicket(jsonTicketNumber);
-      if (ticketExistFlag) {
-        await overrideCurrentAccount(
-          jsonTicketNumber,
-          jsonAttendeeEmail,
-          jsonAttendeeDetails.first_name,
-          jsonAttendeeDetails.last_name,
-          jsonAttendeeDetails.cell_phone
-        );
-      } else if (!ticketExistFlag) {
-        const fullName =
-          jsonAttendeeDetails.first_name + " " + jsonAttendeeDetails.last_name;
-        const successCreateAuthStatus = await createNewUserAuth(
-          jsonTicketNumber,
-          jsonAttendeeEmail,
-          fullName
-        );
-        if (successCreateAuthStatus) {
-          await createNewUserRecord(
+      if (!checkEventId(jsonEventId)) {
+        logger.info("This webhook is not for Winetopia event");
+      } else if (jsonAttendeeDetails == null) {
+        logger.info("ticket_holder_details is null or not found!");
+      } else if (jsonAttendeeEmail == null) {
+        logger.info("ticket_holder_details.email is null or not found!");
+      } else if (jsonTicketType == null) {
+        logger.info("ticket_type is null!");
+      } else if (jsonTicketNumber == null) {
+        logger.info("ticket_number is null!");
+      } else {
+        const ticketExistFlag = await checkExistingTicket(jsonTicketNumber);
+        if (ticketExistFlag === true) {
+          await overrideCurrentAccount(
             jsonTicketNumber,
-            jsonTicketType,
             jsonAttendeeEmail,
             jsonAttendeeDetails.first_name,
             jsonAttendeeDetails.last_name,
             jsonAttendeeDetails.cell_phone
           );
-        } else if (!successCreateAuthStatus) {
-          notifyEmailHasBeenUsed(jsonAttendeeEmail, fullName);
+        } else if (ticketExistFlag === false) {
+          const successCreateAuthResult = await createNewAttendeeAuth(
+            jsonTicketNumber,
+            jsonAttendeeEmail,
+            fullName
+          );
+          if (successCreateAuthResult != null) {
+            await createNewAttendeeRecord(
+              jsonTicketNumber,
+              jsonTicketType,
+              jsonAttendeeEmail,
+              jsonAttendeeDetails.first_name,
+              jsonAttendeeDetails.last_name,
+              jsonAttendeeDetails.cell_phone
+            );
+          }
         }
-        // TODO: else{ notify Fail SetUp account}
       }
+    } catch (error) {
+      logger.error(error);
+    } finally {
+      res.status(200).end();
     }
-    res.status(200).end();
   }
 );
 
-export const welcome = fucntionsV1
+export const sendWelcomeEmail = functionsV1
   .region("australia-southeast1")
   .auth.user()
   .onCreate((user) => {
-    // const apiKey = process.env.SENDGRID_API_KEY;
     if (!sendGridApiKey) {
       logger.info("Missing Send Grid API key");
       throw new Error("Missing SENDGRID_API_KEY in environment variables");
     }
     sgMail.setApiKey(sendGridApiKey);
-    // Send email welcome with login details and app link
     const msg = {
       to: user.email,
       from: "tech@lemongrassproductions.co.nz",
