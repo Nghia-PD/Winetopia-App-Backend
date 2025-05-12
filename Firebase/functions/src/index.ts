@@ -21,18 +21,18 @@ const createNewAttendeeRecord = async (
   lastName: string,
   phone: string
 ) => {
-  let silverToken: number;
-  let goldToken: number;
+  let silverCoin: number;
+  let goldCoin: number;
 
   if (ticketType.toLowerCase() == "premium") {
-    silverToken = 10;
-    goldToken = 0;
+    silverCoin = 10;
+    goldCoin = 0;
   } else if (ticketType.toLowerCase() == "standard") {
-    silverToken = 5;
-    goldToken = 0;
+    silverCoin = 5;
+    goldCoin = 0;
   } else {
-    silverToken = 0;
-    goldToken = 0;
+    silverCoin = 0;
+    goldCoin = 0;
   }
 
   try {
@@ -43,8 +43,8 @@ const createNewAttendeeRecord = async (
       firstName: firstName,
       lastName: lastName,
       phone: phone,
-      silverToken: silverToken,
-      goldToken: goldToken,
+      silverCoin: silverCoin,
+      goldCoin: goldCoin,
     });
     logger.info("✅ User record created in Firestore for UID: ", ticketNumber);
   } catch (error) {
