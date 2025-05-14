@@ -73,13 +73,13 @@ const createNewAttendeeAuth = async (
   } catch (error) {
     if (error instanceof FirebaseAuthError) {
       switch (error.code) {
-      case "auth/user-not-found":
+      case "auth/email-already-exists":
         notifyEmailHasBeenUsed(jsonAttendeeEmail, fullName);
+        logger.warn("⚠️ User already exists with email:", jsonAttendeeEmail);
         break;
       }
     } else {
       logger.error("Error creating user: ", error);
-      // call send email function, pass in the error
     }
 
     return null;
